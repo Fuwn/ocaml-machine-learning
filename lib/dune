@@ -1,5 +1,48 @@
 (library
+ (c_library_flags
+  (-framework Foundation -framework Metal))
  (flags
   (:standard -w +a -warn-error +a))
  (name ocaml_machine_learning)
+ (foreign_stubs
+  (language c)
+  (names appleGpuTwoLayerNetwork_stubs)
+  (flags
+   (:standard -x objective-c -fobjc-arc)))
  (public_name ocaml-machine-learning))
+
+(rule
+ (targets appleGpuTwoLayerNetworkKernels.air)
+ (deps appleGpuTwoLayerNetworkKernels.metal)
+ (action
+  (run
+   xcrun
+   metal
+   -c
+   %{dep:appleGpuTwoLayerNetworkKernels.metal}
+   -o
+   %{targets})))
+
+(rule
+ (targets appleGpuTwoLayerNetworkKernels.metallib)
+ (deps appleGpuTwoLayerNetworkKernels.air)
+ (action
+  (run
+   xcrun
+   metallib
+   %{dep:appleGpuTwoLayerNetworkKernels.air}
+   -o
+   %{targets})))
+
+(rule
+ (targets appleGpuTwoLayerNetworkMetallib.inc)
+ (deps appleGpuTwoLayerNetworkKernels.metallib)
+ (action
+  (with-stdout-to
+   %{targets}
+   (run
+    xxd
+    -i
+    -n
+    appleGpuTwoLayerNetworkMetallibData
+    %{dep:appleGpuTwoLayerNetworkKernels.metallib}))))

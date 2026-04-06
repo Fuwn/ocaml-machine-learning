@@ -1,14 +1,11 @@
-type neuron = { inputWeights : float array; mutable bias : float }
-type t = { inputCount : int; hiddenLayer : neuron array; outputNeuron : neuron }
+type layer = { weights : ComputeBackend.matrix; biases : ComputeBackend.vector }
 
-let createWeight randomState = Random.State.float randomState 2.0 -. 1.0
-
-let createNeuron randomState inputCount =
-  let inputWeights =
-    Array.init inputCount (fun _ -> createWeight randomState)
-  in
-  let bias = createWeight randomState in
-  { inputWeights; bias }
+type t = {
+  backendKind : ComputeBackend.kind;
+  inputCount : int;
+  hiddenLayer : layer;
+  outputLayer : layer;
+}
 
 let validateInputCount expectedInputCount inputs =
   let actualInputCount = Array.length inputs in
@@ -17,72 +14,114 @@ let validateInputCount expectedInputCount inputs =
       (Printf.sprintf "Expected %d inputs but received %d" expectedInputCount
          actualInputCount)
 
-let neuronOutput neuron inputs =
-  let weightedSum = ref neuron.bias in
-  Array.iteri
-    (fun inputIndex inputValue ->
-      weightedSum :=
-        !weightedSum +. (neuron.inputWeights.(inputIndex) *. inputValue))
-    inputs;
-  ActivationFunction.sigmoid !weightedSum
+let validateExampleInputs network inputsBatch =
+  Array.iter (validateInputCount network.inputCount) inputsBatch
 
-let hiddenOutputs network inputs =
-  Array.map (fun neuron -> neuronOutput neuron inputs) network.hiddenLayer
+let validateExpectedOutputCount trainingInputs expectedOutputs =
+  if Array.length trainingInputs <> Array.length expectedOutputs then
+    invalid_arg "Training input count must match expected output count"
 
 let forwardPass network inputs =
   validateInputCount network.inputCount inputs;
-  let hiddenLayerOutputs = hiddenOutputs network inputs in
-  let output = neuronOutput network.outputNeuron hiddenLayerOutputs in
+  let hiddenLayerOutputs =
+    ComputeBackend.affineTransform network.backendKind
+      ~weights:network.hiddenLayer.weights ~inputs
+      ~biases:network.hiddenLayer.biases
+    |> ComputeBackend.mapSigmoid network.backendKind
+  in
+  let output =
+    ComputeBackend.affineTransform network.backendKind
+      ~weights:network.outputLayer.weights ~inputs:hiddenLayerOutputs
+      ~biases:network.outputLayer.biases
+    |> fun outputVector -> ActivationFunction.sigmoid outputVector.(0)
+  in
   (hiddenLayerOutputs, output)
 
-let create ~randomState ~inputCount ~hiddenCount =
+let create ~backendKind ~randomState ~inputCount ~hiddenCount =
   if inputCount < 1 then invalid_arg "inputCount must be at least 1";
   if hiddenCount < 1 then invalid_arg "hiddenCount must be at least 1";
   let hiddenLayer =
-    Array.init hiddenCount (fun _ -> createNeuron randomState inputCount)
+    {
+      weights =
+        ComputeBackend.createRandomMatrix ~randomState ~rowCount:hiddenCount
+          ~columnCount:inputCount;
+      biases = ComputeBackend.createRandomVector ~randomState ~count:hiddenCount;
+    }
   in
-  let outputNeuron = createNeuron randomState hiddenCount in
-  { inputCount; hiddenLayer; outputNeuron }
+  let outputLayer =
+    {
+      weights =
+        ComputeBackend.createRandomMatrix ~randomState ~rowCount:1
+          ~columnCount:hiddenCount;
+      biases = ComputeBackend.createRandomVector ~randomState ~count:1;
+    }
+  in
+  { backendKind; inputCount; hiddenLayer; outputLayer }
 
-let predict network inputs =
-  let _, output = forwardPass network inputs in
-  output
+let predictBatch network inputsBatch =
+  validateExampleInputs network inputsBatch;
+  match network.backendKind with
+  | ComputeBackend.Cpu ->
+      Array.map
+        (fun inputs ->
+          let _, output = forwardPass network inputs in
+          output)
+        inputsBatch
+  | ComputeBackend.AppleGpu ->
+      AppleGpuTwoLayerNetwork.predictBatch
+        ~hiddenWeights:network.hiddenLayer.weights
+        ~hiddenBiases:network.hiddenLayer.biases
+        ~outputWeights:network.outputLayer.weights
+        ~outputBiases:network.outputLayer.biases ~inputsBatch
+
+let predict network inputs = (predictBatch network [| inputs |]).(0)
 
 let trainExample network ~learningRate ~inputs ~expectedOutput =
   let hiddenLayerOutputs, output = forwardPass network inputs in
-  let outputWeightsBeforeUpdate =
-    Array.copy network.outputNeuron.inputWeights
-  in
   let outputErrorSignal =
-    (output -. expectedOutput)
-    *. ActivationFunction.sigmoidDerivativeFromOutput output
+    [|
+      (output -. expectedOutput)
+      *. ActivationFunction.sigmoidDerivativeFromOutput output;
+    |]
   in
-  Array.iteri
-    (fun hiddenNeuronIndex hiddenOutput ->
-      let updatedWeight =
-        network.outputNeuron.inputWeights.(hiddenNeuronIndex)
-        -. (learningRate *. outputErrorSignal *. hiddenOutput)
-      in
-      network.outputNeuron.inputWeights.(hiddenNeuronIndex) <- updatedWeight)
-    hiddenLayerOutputs;
-  network.outputNeuron.bias <-
-    network.outputNeuron.bias -. (learningRate *. outputErrorSignal);
-  Array.iteri
-    (fun hiddenNeuronIndex hiddenNeuron ->
-      let hiddenOutput = hiddenLayerOutputs.(hiddenNeuronIndex) in
-      let hiddenErrorSignal =
-        outputWeightsBeforeUpdate.(hiddenNeuronIndex)
-        *. outputErrorSignal
-        *. ActivationFunction.sigmoidDerivativeFromOutput hiddenOutput
-      in
-      Array.iteri
-        (fun inputIndex inputValue ->
-          let updatedWeight =
-            hiddenNeuron.inputWeights.(inputIndex)
-            -. (learningRate *. hiddenErrorSignal *. inputValue)
-          in
-          hiddenNeuron.inputWeights.(inputIndex) <- updatedWeight)
-        inputs;
-      hiddenNeuron.bias <-
-        hiddenNeuron.bias -. (learningRate *. hiddenErrorSignal))
-    network.hiddenLayer
+  let hiddenErrorSignal =
+    ComputeBackend.transposeMatrixVectorProduct network.backendKind
+      network.outputLayer.weights outputErrorSignal
+    |> fun propagatedOutputErrorSignal ->
+    ComputeBackend.hadamardProduct network.backendKind
+      ~left:propagatedOutputErrorSignal
+      ~right:
+        (ComputeBackend.mapSigmoidDerivativeFromOutput network.backendKind
+           hiddenLayerOutputs)
+  in
+  ComputeBackend.updateMatrixByOuterProduct network.backendKind
+    network.outputLayer.weights ~learningRate ~errorSignals:outputErrorSignal
+    ~inputs:hiddenLayerOutputs;
+  ComputeBackend.updateVectorByScaledErrorSignal network.backendKind
+    network.outputLayer.biases ~learningRate ~errorSignals:outputErrorSignal;
+  ComputeBackend.updateMatrixByOuterProduct network.backendKind
+    network.hiddenLayer.weights ~learningRate ~errorSignals:hiddenErrorSignal
+    ~inputs;
+  ComputeBackend.updateVectorByScaledErrorSignal network.backendKind
+    network.hiddenLayer.biases ~learningRate ~errorSignals:hiddenErrorSignal
+
+let trainExamples network ~epochCount ~learningRate ~trainingInputs
+    ~expectedOutputs =
+  validateExampleInputs network trainingInputs;
+  validateExpectedOutputCount trainingInputs expectedOutputs;
+  match network.backendKind with
+  | ComputeBackend.Cpu ->
+      for _ = 1 to epochCount do
+        Array.iteri
+          (fun exampleIndex inputs ->
+            trainExample network ~learningRate ~inputs
+              ~expectedOutput:expectedOutputs.(exampleIndex))
+          trainingInputs
+      done
+  | ComputeBackend.AppleGpu ->
+      AppleGpuTwoLayerNetwork.trainEpochs ~epochCount ~learningRate
+        ~hiddenWeights:network.hiddenLayer.weights
+        ~hiddenBiases:network.hiddenLayer.biases
+        ~outputWeights:network.outputLayer.weights
+        ~outputBiases:network.outputLayer.biases ~trainingInputs
+        ~expectedOutputs

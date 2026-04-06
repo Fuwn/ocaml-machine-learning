@@ -1,8 +1,21 @@
 type t
 
 val create :
-  randomState:Random.State.t -> inputCount:int -> hiddenCount:int -> t
+  backendKind:ComputeBackend.kind ->
+  randomState:Random.State.t ->
+  inputCount:int ->
+  hiddenCount:int ->
+  t
 
+val trainExamples :
+  t ->
+  epochCount:int ->
+  learningRate:float ->
+  trainingInputs:float array array ->
+  expectedOutputs:float array ->
+  unit
+
+val predictBatch : t -> float array array -> float array
 val predict : t -> float array -> float
 
 val trainExample :

@@ -7,6 +7,7 @@ type evaluation = {
 let defaultEpochCount = 40_000
 let defaultLearningRate = 0.7
 let defaultRandomSeed = 7
+let defaultBackendKind = ComputeBackend.Cpu
 
 let xorTrainingExamples =
   [
@@ -16,31 +17,44 @@ let xorTrainingExamples =
     TrainingExample.create [| 1.0; 1.0 |] 0.0;
   ]
 
-let train ~epochCount ~learningRate ~randomSeed =
+let trainingInputs =
+  Array.of_list
+    (List.map
+       (fun (trainingExample : TrainingExample.t) ->
+         Array.copy trainingExample.TrainingExample.inputs)
+       xorTrainingExamples)
+
+let expectedOutputs =
+  Array.of_list
+    (List.map
+       (fun (trainingExample : TrainingExample.t) ->
+         trainingExample.TrainingExample.expectedOutput)
+       xorTrainingExamples)
+
+let trainWithBackend ~backendKind ~epochCount ~learningRate ~randomSeed =
   let randomState = Random.State.make [| randomSeed |] in
   let network =
-    TwoLayerNeuralNetwork.create ~randomState ~inputCount:2 ~hiddenCount:2
+    TwoLayerNeuralNetwork.create ~backendKind ~randomState ~inputCount:2
+      ~hiddenCount:2
   in
-  for _ = 1 to epochCount do
-    List.iter
-      (fun (trainingExample : TrainingExample.t) ->
-        TwoLayerNeuralNetwork.trainExample network ~learningRate
-          ~inputs:trainingExample.TrainingExample.inputs
-          ~expectedOutput:trainingExample.TrainingExample.expectedOutput)
-      xorTrainingExamples
-  done;
+  TwoLayerNeuralNetwork.trainExamples network ~epochCount ~learningRate
+    ~trainingInputs ~expectedOutputs;
   network
 
+let train ~epochCount ~learningRate ~randomSeed =
+  trainWithBackend ~backendKind:defaultBackendKind ~epochCount ~learningRate
+    ~randomSeed
+
 let evaluate network =
-  List.map
-    (fun (trainingExample : TrainingExample.t) ->
-      let predictedOutput =
-        TwoLayerNeuralNetwork.predict network
-          trainingExample.TrainingExample.inputs
-      in
-      {
-        inputs = Array.copy trainingExample.TrainingExample.inputs;
-        expectedOutput = trainingExample.TrainingExample.expectedOutput;
-        predictedOutput;
-      })
-    xorTrainingExamples
+  let predictedOutputs =
+    TwoLayerNeuralNetwork.predictBatch network trainingInputs
+  in
+  Array.to_list
+    (Array.mapi
+       (fun exampleIndex inputs ->
+         {
+           inputs = Array.copy inputs;
+           expectedOutput = expectedOutputs.(exampleIndex);
+           predictedOutput = predictedOutputs.(exampleIndex);
+         })
+       trainingInputs)
