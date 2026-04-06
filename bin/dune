@@ -1,0 +1,5 @@
+(executables
+ (flags
+  (:standard -w +a -warn-error +a))
+ (libraries ocaml-machine-learning)
+ (names xor gpt transformers))

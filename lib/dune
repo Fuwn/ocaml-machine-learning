@@ -1,0 +1,5 @@
+(library
+ (flags
+  (:standard -w +a -warn-error +a))
+ (name ocaml_machine_learning)
+ (public_name ocaml-machine-learning))

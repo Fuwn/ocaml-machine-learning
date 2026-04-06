@@ -1,0 +1,5 @@
+(test
+ (flags
+  (:standard -w +a -warn-error +a))
+ (libraries ocaml-machine-learning)
+ (name xorTrainingTest))
