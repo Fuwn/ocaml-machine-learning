@@ -1,0 +1,5 @@
+(executable
+ (name xorBackendBenchmark)
+ (libraries ocaml-machine-learning unix)
+ (flags
+  (:standard -w +a -warn-error +a)))

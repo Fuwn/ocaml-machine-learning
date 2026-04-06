@@ -20,6 +20,12 @@ dune build
 dune exec ./bin/xor.exe
 ```
 
+## Run the Backend Benchmark
+
+```sh
+dune exec ./benchmark/xorBackendBenchmark.exe
+```
+
 ## Run Tests
 
 ```sh
